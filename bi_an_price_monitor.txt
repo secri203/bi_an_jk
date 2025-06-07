@@ -3,8 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      4.3
 // @description  Binance alpha 价格监控助手，支持电脑端、手机端
-// @author       Grok（微信：qf20210110）
-// @github       https://github.com/secri203/bi_an_jk
+// @author       Grok（微信：qf20210110）（github：https://github.com/secri203/bi_an_jk）
 // @match        https://www.binance.com/zh-CN/alpha/*
 // @grant        GM_xmlhttpRequest
 // @connect      101.33.234.249
@@ -13,334 +12,591 @@
 (function() {
     'use strict';
 
-    // 存储所有定时器ID
-    const timerIds = {
-        updateTimer: null,
-        protectTimer: null
+    // 全局配置
+    const CONFIG = {
+        // 用户名
+        username: 'demo',
     };
 
-    // 存储最后一次预警时间
-    let lastAlertTime = null;
-    const ALERT_INTERVAL = 5 * 60 * 1000; // 5分钟的毫秒数
+    // 添加价格颜色样式到<head>
+    const colorStyle = document.createElement('style');
+    colorStyle.textContent = `
+    .price-yellow { color: #F0B90B !important; }
+    .price-green  { color: #00FF00 !important; }
+    .price-red    { color: #FF0000 !important; }
+    `;
+    document.head.appendChild(colorStyle);
 
-    // 密码设置
-    const EXIT_PASSWORD = "123";
-
-    // 1. 强制创建覆盖层（完全复现图片样式）
-    const overlay = document.createElement('div');
-    overlay.id = 'myx-absolute-overlay';
-    overlay.style.cssText = `
+    // 创建滑块容器
+    const sliderContainer = document.createElement('div');
+    sliderContainer.style.cssText = `
         position: fixed !important;
-        top: 0 !important;
-        left: 0 !important;
-        width: 100vw !important;
-        height: 100vh !important;
-        background: #000 !important;
+        top: 110px !important;
+        right: 20px !important;
+        background: #1E2329 !important;
+        padding: 0px !important;
+        border-radius: 8px !important;
+        z-index: 9999 !important;
+        box-shadow: 0 0 10px rgba(0,0,0,0.3) !important;
         display: flex !important;
         flex-direction: column !important;
-        justify-content: center !important;
         align-items: center !important;
-        z-index: 2147483647 !important;
+        gap: 10px !important;
+        cursor: move !important;
+        user-select: none !important;
+        transition: height 0.3s ease !important;
     `;
 
-    // 2. MYX价格显示（严格按图片样式）
-    const priceDisplay = document.createElement('div');
-    priceDisplay.id = 'myx-main-price';
-    priceDisplay.style.cssText = `
-        font-size: 72px !important;
+    // 创建标题栏
+    const titleBar = document.createElement('div');
+    titleBar.style.cssText = `
+        width: 100% !important;
+        height: 30px !important;
+        background: #2B3139 !important;
+        border-radius: 8px 8px 0 0 !important;
+        cursor: move !important;
+        display: flex !important;
+        justify-content: flex-end !important;
+        align-items: center !important;
+        padding: 0 12px !important;
+        box-sizing: border-box !important;
+        min-width: 120px !important;
+    `;
+
+    // 创建折叠按钮
+    const collapseBtn = document.createElement('a');
+    collapseBtn.textContent = '折叠';
+    collapseBtn.style.cssText = `
         color: #F0B90B !important;
-        margin-bottom: 20px !important;
-        font-weight: 700 !important;
-        visibility: visible !important;
-        opacity: 1 !important;
+        text-decoration: none !important;
+        font-size: 13px !important;
+        cursor: pointer !important;
+        user-select: none !important;
+        padding: 4px 8px !important;
+        border-radius: 4px !important;
+        transition: background-color 0.2s !important;
+    `;
+    collapseBtn.onmouseover = function() {
+        this.style.textDecoration = 'underline';
+        this.style.backgroundColor = 'rgba(240, 185, 11, 0.1)';
+    };
+    collapseBtn.onmouseout = function() {
+        this.style.textDecoration = 'none';
+        this.style.backgroundColor = 'transparent';
+    };
+
+    // 添加折叠/展开功能
+    let isCollapsed = false;
+    collapseBtn.onclick = function(e) {
+        e.stopPropagation(); // 阻止事件冒泡，避免触发拖拽
+        isCollapsed = !isCollapsed;
+        if (isCollapsed) {
+            contentDiv.style.display = 'none';
+            sliderContainer.style.height = '30px';
+            collapseBtn.textContent = '展开';
+        } else {
+            contentDiv.style.display = 'flex';
+            sliderContainer.style.height = 'auto';
+            collapseBtn.textContent = '折叠';
+        }
+    };
+
+    // 将折叠按钮添加到标题栏
+    titleBar.appendChild(collapseBtn);
+
+    // 创建内容区div
+    const contentDiv = document.createElement('div');
+    contentDiv.style.cssText = `
+        width: 100%;
+        padding: 15px;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+    `;
+
+    // 创建价格显示
+    const priceDisplay = document.createElement('div');
+    priceDisplay.className = 'price-yellow';
+    priceDisplay.style.cssText = `
+        font-size: 22px !important;
+        font-weight: bold !important;
         transition: color 0.3s ease !important;
     `;
-    priceDisplay.textContent = 'MYX';
 
-    // 3. 时间显示（严格按图片格式）
-    const timeDisplay = document.createElement('div');
-    timeDisplay.id = 'myx-time-stamp';
-    timeDisplay.style.cssText = `
-        font-size: 16px !important;
-        color: #848E9C !important;
-        margin-bottom: 40px !important;
-        visibility: visible !important;
+    // 创建文本框
+    const priceInput = document.createElement('input');
+    priceInput.type = 'text';
+    priceInput.style.cssText = `
+        width: 120px;
+        text-align: center;
+        font-size: 18px;
+        color: #F0B90B;
+        background: #23272F;
+        border: 1px solid #F0B90B;
+        border-radius: 4px;
+        margin: 6px 0;
+        padding: 4px 0;
     `;
 
-    // 4. 按钮（完全复现图片）
-    const hideBtn = document.createElement('button');
-    hideBtn.textContent = '退出手机屏保';
-    hideBtn.style.cssText = `
+    // 创建滑块
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.style.cssText = `
+        width: 220px !important;
+        height: 4px !important;
+        -webkit-appearance: none !important;
         background: #2B3139 !important;
-        color: #EAECEF !important;
-        border: none !important;
-        padding: 8px 16px !important;
+        border-radius: 2px !important;
+        outline: none !important;
+    `;
+
+    // 自定义滑块样式
+    const style = document.createElement('style');
+    style.textContent = `
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #F0B90B;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 4px #000;
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            background: #F0B90B;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+        }
+        input[type="range"]::-ms-thumb {
+            width: 20px;
+            height: 20px;
+            background: #F0B90B;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+        }
+        input[type="range"] {
+            background: #2B3139;
+        }
+        .myx-btn {
+            background: #2B3139 !important;
+            color: #F0B90B !important;
+            border: 1px solid #F0B90B !important;
+            padding: 6px 18px !important;
+            border-radius: 4px !important;
+            cursor: pointer !important;
+            font-size: 15px !important;
+            margin: 0 8px !important;
+            font-weight: bold !important;
+            transition: background 0.2s;
+        }
+        .myx-btn:hover {
+            background: #F0B90B !important;
+            color: #1E2329 !important;
+        }
+        .myx-btn-group {
+            display: flex;
+            flex-direction: row;
+            gap: 10px;
+            margin-top: 6px;
+        }
+    `;
+    document.head.appendChild(style);
+
+    // 获取初始价格
+    function getInitialPrice() {
+        const allElements = document.querySelectorAll('*');
+        for (let el of allElements) {
+            if (el.textContent.includes('$') && el.textContent.match(/\d+\.\d+/)) {
+                return parseFloat(el.textContent.match(/\d+\.\d+/)[0]);
+            }
+        }
+        return 0.01;
+    }
+
+    // 获取币种名
+    function getCoinType() {
+        // 尝试获取页面上币种名（如TROLL11）
+        // 1. 先找URL最后一段
+        const urlParts = window.location.pathname.split('/');
+        let coinType = urlParts[urlParts.length - 1];
+        // 2. 页面上找div.text-PrimaryText
+        const div = document.querySelector('div.text-PrimaryText');
+        if (div && div.textContent) {
+            coinType = div.textContent.trim();
+        } else {
+            // 兜底：找所有div
+            const allDivs = document.getElementsByTagName('div');
+            for (let d of allDivs) {
+                if (d.className && d.className.includes('text-PrimaryText')) {
+                    coinType = d.textContent.trim();
+                    break;
+                }
+            }
+        }
+        return coinType;
+    }
+
+    // 初始化滑块
+    const initialPrice = getInitialPrice();
+    const range = initialPrice * 0.3; // ±30%
+    const min = +(initialPrice - range).toFixed(6);
+    const max = +(initialPrice + range).toFixed(6);
+    const step = 0.000001;
+    slider.min = min.toString();
+    slider.max = max.toString();
+    slider.step = step.toString();
+    slider.value = initialPrice.toString();
+    priceDisplay.textContent = `当前价格: $${parseFloat(slider.value).toFixed(6)}`;
+
+    // 初始化文本框
+    priceInput.value = parseFloat(slider.value).toFixed(6);
+
+    // 滑块滑动时同步文本框
+    slider.addEventListener('input', function() {
+        // priceDisplay.textContent = `价格: $${parseFloat(this.value).toFixed(6)}`;
+        priceInput.value = parseFloat(this.value).toFixed(6);
+    });
+
+    // 文本框输入时同步滑块
+    priceInput.addEventListener('input', function() {
+        let val = parseFloat(this.value);
+        if (!isNaN(val)) {
+            // 限制在滑块范围内
+            if (val < min) val = min;
+            if (val > max) val = max;
+            slider.value = val;
+            // priceDisplay.textContent = `价格: $${val.toFixed(6)}`;
+        }
+    });
+
+    // 创建按钮组
+    const btnGroup = document.createElement('div');
+    btnGroup.className = 'myx-btn-group';
+
+    // 创建下限按钮
+    const btnLower = document.createElement('button');
+    btnLower.className = 'myx-btn';
+    btnLower.textContent = '设置监控下限';
+    btnLower.onclick = function() {
+        const price = parseFloat(priceInput.value).toFixed(6);
+        const coinType = getCoinType();
+        if (confirm(`确定将 $${price} 设置为${coinType}的监控下限价格吗？`)) {
+            updateMonitor(coinType, '1', price);
+        }
+    };
+
+    // 创建上限按钮
+    const btnUpper = document.createElement('button');
+    btnUpper.className = 'myx-btn';
+    btnUpper.textContent = '设置监控上限';
+    btnUpper.onclick = function() {
+        const price = parseFloat(priceInput.value).toFixed(6);
+        const coinType = getCoinType();
+        if (confirm(`确定将 $${price} 设置为${coinType}的监控上限价格吗？`)) {
+            updateMonitor(coinType, '0', price);
+        }
+    };
+
+    btnGroup.appendChild(btnLower);
+    btnGroup.appendChild(btnUpper);
+
+    // 页面初始化时自动获取监控价格
+    window.addEventListener('load', function() {
+        const coinType = getCoinType();
+        fetchMonitorPricesForMore(coinType);
+    });
+
+    // API请求函数（使用GM_xmlhttpRequest）
+    function updateMonitor(coinType, monitorType, monitorPrice) {
+        console.log('开始设置监控价格:', {
+            coinType,
+            monitorType,
+            monitorPrice,
+            username: CONFIG.username
+        });
+
+        const requestData = {
+            coin_type: coinType,
+            monitor_type: monitorType,
+            monitor_price: monitorPrice,
+            username: CONFIG.username,
+            dingtalk_token: CONFIG.dingtalk_token || '',
+            dingtalk_secret: CONFIG.dingtalk_secret || ''
+        };
+        console.log('请求数据:', requestData);
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: 'http://101.33.234.249:8000/update_monitor',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            data: JSON.stringify(requestData),
+            onload: function(response) {
+                console.log('服务器响应:', response.responseText);
+                try {
+                    const data = JSON.parse(response.responseText);
+                    if (data.success) {
+                        console.log('设置成功:', data.msg);
+                        alert(data.msg || '设置成功！');
+                        // 设置成功后，重新获取监控价格
+                        fetchMonitorPricesForMore(coinType);
+                    } else {
+                        console.error('设置失败:', data.msg);
+                        alert(data.msg || '设置失败！');
+                    }
+                } catch (e) {
+                    console.error('解析响应数据失败:', e);
+                    alert('返回数据解析失败！');
+                }
+            },
+            onerror: function(error) {
+                console.error('网络请求失败:', error);
+                alert('网络请求失败，请重试！');
+            }
+        });
+    }
+
+    // 添加拖拽功能
+    let isDragging = false;
+    let currentX;
+    let currentY;
+    let initialX;
+    let initialY;
+    let xOffset = 0;
+    let yOffset = 0;
+
+    function dragStart(e) {
+        if (e.type === "touchstart") {
+            initialX = e.touches[0].clientX - xOffset;
+            initialY = e.touches[0].clientY - yOffset;
+        } else {
+            initialX = e.clientX - xOffset;
+            initialY = e.clientY - yOffset;
+        }
+
+        if (e.target === sliderContainer || e.target === titleBar) {
+            isDragging = true;
+        }
+    }
+
+    function dragEnd(e) {
+        initialX = currentX;
+        initialY = currentY;
+        isDragging = false;
+    }
+
+    function drag(e) {
+        if (isDragging) {
+            e.preventDefault();
+
+            if (e.type === "touchmove") {
+                currentX = e.touches[0].clientX - initialX;
+                currentY = e.touches[0].clientY - initialY;
+            } else {
+                currentX = e.clientX - initialX;
+                currentY = e.clientY - initialY;
+            }
+
+            xOffset = currentX;
+            yOffset = currentY;
+
+            setTranslate(currentX, currentY, sliderContainer);
+        }
+    }
+
+    function setTranslate(xPos, yPos, el) {
+        el.style.transform = `translate3d(${xPos}px, ${yPos}px, 0)`;
+    }
+
+    // 添加事件监听器
+    sliderContainer.addEventListener("touchstart", dragStart, false);
+    sliderContainer.addEventListener("touchend", dragEnd, false);
+    sliderContainer.addEventListener("touchmove", drag, false);
+
+    sliderContainer.addEventListener("mousedown", dragStart, false);
+    sliderContainer.addEventListener("mouseup", dragEnd, false);
+    sliderContainer.addEventListener("mousemove", drag, false);
+
+    // 创建查看更多按钮
+    const moreBtn = document.createElement('button');
+    moreBtn.textContent = '查看更多';
+    moreBtn.style.cssText = `
+        background: #2B3139 !important;
+        color: #F0B90B !important;
+        border: 1px solid #F0B90B !important;
+        padding: 4px 14px !important;
         border-radius: 4px !important;
         cursor: pointer !important;
         font-size: 14px !important;
+        margin-top: 8px !important;
+        font-weight: bold !important;
+        transition: background 0.2s;
     `;
 
-    // 创建密码输入弹窗
-    function createPasswordModal() {
-        const modal = document.createElement('div');
-        modal.style.cssText = `
-            position: fixed !important;
-            top: 50% !important;
-            left: 50% !important;
-            transform: translate(-50%, -50%) !important;
-            background: #1E2329 !important;
-            padding: 20px !important;
-            border-radius: 8px !important;
-            z-index: 2147483647 !important;
-            display: flex !important;
-            flex-direction: column !important;
-            align-items: center !important;
-            box-shadow: 0 0 20px rgba(0,0,0,0.5) !important;
-        `;
-
-        const title = document.createElement('div');
-        title.textContent = '请输入退出密码';
-        title.style.cssText = `
-            color: #EAECEF !important;
-            font-size: 18px !important;
-            margin-bottom: 15px !important;
-        `;
-
-        const input = document.createElement('input');
-        input.type = 'password';
-        input.style.cssText = `
-            width: 200px !important;
-            padding: 8px 12px !important;
-            margin-bottom: 15px !important;
-            background: #2B3139 !important;
-            border: 1px solid #474D57 !important;
-            border-radius: 4px !important;
-            color: #EAECEF !important;
-            font-size: 14px !important;
-        `;
-
-        const btnContainer = document.createElement('div');
-        btnContainer.style.cssText = `
-            display: flex !important;
-            gap: 10px !important;
-        `;
-
-        const confirmBtn = document.createElement('button');
-        confirmBtn.textContent = '确认';
-        confirmBtn.style.cssText = `
-            background: #F0B90B !important;
-            color: #000 !important;
-            border: none !important;
-            padding: 8px 16px !important;
-            border-radius: 4px !important;
-            cursor: pointer !important;
-            font-size: 14px !important;
-        `;
-
-        const cancelBtn = document.createElement('button');
-        cancelBtn.textContent = '取消';
-        cancelBtn.style.cssText = `
-            background: #2B3139 !important;
-            color: #EAECEF !important;
-            border: none !important;
-            padding: 8px 16px !important;
-            border-radius: 4px !important;
-            cursor: pointer !important;
-            font-size: 14px !important;
-        `;
-
-        confirmBtn.onclick = function() {
-            if (input.value === EXIT_PASSWORD) {
-                // 清除所有定时器
-                clearInterval(timerIds.updateTimer);
-                clearInterval(timerIds.protectTimer);
-                timerIds.updateTimer = null;
-                timerIds.protectTimer = null;
-
-                // 移除事件监听器
-                document.removeEventListener('visibilitychange', ironcladUpdate);
-                window.removeEventListener('focus', ironcladUpdate);
-
-                // 移除覆盖层
-                if (overlay && overlay.parentNode) {
-                    overlay.parentNode.removeChild(overlay);
-                }
-
-                // 移除密码弹窗
-                document.body.removeChild(modal);
-            } else {
-                alert('密码错误！');
-                input.value = '';
-                input.focus();
-            }
-        };
-
-        cancelBtn.onclick = function() {
-            document.body.removeChild(modal);
-        };
-
-        btnContainer.appendChild(confirmBtn);
-        btnContainer.appendChild(cancelBtn);
-
-        modal.appendChild(title);
-        modal.appendChild(input);
-        modal.appendChild(btnContainer);
-
-        document.body.appendChild(modal);
-        input.focus();
-    }
-
-    // 修改按钮点击事件：先弹出密码输入框
-    hideBtn.onclick = createPasswordModal;
-
-    // 组装元素
-    overlay.appendChild(priceDisplay);
-    overlay.appendChild(timeDisplay);
-    overlay.appendChild(hideBtn);
-    document.body.appendChild(overlay);
-
-    // 新增阈值显示行
-    const thresholdDisplay = document.createElement('div');
-    thresholdDisplay.id = 'myx-threshold-display';
-    thresholdDisplay.style.cssText = `
-        font-size: 16px !important;
-        color: #848E9C !important;
-        margin-bottom: 20px !important;
-        visibility: visible !important;
+    // 创建更多区域
+    const moreArea = document.createElement('div');
+    moreArea.style.cssText = `
+        width: 100%;
+        background: #23272F;
+        color: #F0B90B;
+        border-radius: 0 0 8px 8px;
+        margin-top: 10px;
+        padding: 12px 8px 8px 8px;
+        font-size: 15px;
+        display: none;
+        text-align: left;
     `;
-    overlay.insertBefore(thresholdDisplay, timeDisplay);
+    moreArea.innerHTML = '<div>最小监控价格：--</div><div>最大监控价格：--</div><div>区间百分比：--%</div>';
 
-    // 获取token名称
-    const div = document.querySelector('div.text-PrimaryText');
-    let tokenName = '';
+    let moreOpen = false;
+    let moreMin = null;
+    let moreMax = null;
+    let moreCur = null;
 
-    if (!div) {
-        const allDivs = document.getElementsByTagName('div');
-        for (let d of allDivs) {
-            if (d.className.includes('text-PrimaryText')) {
-                tokenName = d.textContent;
-                break;
-            }
-        }
-    } else {
-        tokenName = div.textContent;
-    }
-
-    // 全局变量存储价格阈值
-    let maxPrice = null;
-    let minPrice = null;
-
-    // 从API获取监控价格
-    function fetchMonitorPrices() {
+    // 获取监控价格API
+    function fetchMonitorPricesForMore(coinType, cb) {
         GM_xmlhttpRequest({
             method: 'POST',
             url: 'http://101.33.234.249:8000/query_monitor_price',
             headers: {
                 'Content-Type': 'application/json'
             },
-            data: JSON.stringify({ token_name: tokenName }),
-            onload: function(response) {
-                try {
-                    const data = JSON.parse(response.responseText);
-                    if (data.success) {
-                        maxPrice = parseFloat(data.data.max_prices[0]);
-                        minPrice = parseFloat(data.data.min_prices[0]);
-                    }
-                } catch (e) {
-                    console.error('解析API响应失败:', e);
-                }
-            },
-            onerror: function(error) {
-                console.error('获取监控价格失败:', error);
-            }
-        });
-    }
-
-    // 发送价格预警
-    function sendPriceAlert(price) {
-        const now = Date.now();
-        // 检查是否在5分钟内已经发送过预警
-        if (lastAlertTime && (now - lastAlertTime) < ALERT_INTERVAL) {
-            return;
-        }
-
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: 'http://101.33.234.249:8000/price_alert',
-            headers: {
-                'Content-Type': 'application/json'
-            },
             data: JSON.stringify({
-                token_name: tokenName,
-                price: price
+                token_name: coinType,
+                username: CONFIG.username,
+                dingtalk_token: CONFIG.dingtalk_token,
+                dingtalk_secret: CONFIG.dingtalk_secret
             }),
             onload: function(response) {
                 try {
                     const data = JSON.parse(response.responseText);
                     if (data.success) {
-                        lastAlertTime = now;
-                        console.log('价格预警发送成功');
+                        moreMax = parseFloat(data.data.max_prices[0]);
+                        moreMin = parseFloat(data.data.min_prices[0]);
+                        console.log('[监控区间] moreMin:', moreMin, 'moreMax:', moreMax);
+                        // 保存用户等级信息
+                        window.userLevelText = data.data.user_level_text || '';
+                    } else {
+                        moreMax = null;
+                        moreMin = null;
+                        window.userLevelText = '';
                     }
                 } catch (e) {
-                    console.error('发送价格预警失败:', e);
+                    moreMax = null;
+                    moreMin = null;
+                    window.userLevelText = '';
                 }
+                // 页面初始化时立即比对一次
+                const curPrice = getRealtimePrice();
+                console.log('[初始化] 当前价格:', curPrice);
+                updatePriceColor(curPrice);
+                cb && cb();
             },
-            onerror: function(error) {
-                console.error('发送价格预警失败:', error);
+            onerror: function() {
+                moreMax = null;
+                moreMin = null;
+                window.userLevelText = '';
+                const curPrice = getRealtimePrice();
+                updatePriceColor(curPrice);
+                cb && cb();
             }
         });
     }
 
-    // 更新函数
-    function ironcladUpdate() {
-        const allElements = document.querySelectorAll('*');
-        let currentPrice = null;
-
-        for (let el of allElements) {
-            if (el.textContent.includes('$') && el.textContent.match(/\d+\.\d+/)) {
-                currentPrice = parseFloat(el.textContent.match(/\d+\.\d+/)[0]);
-                priceDisplay.textContent = `${tokenName}: ${currentPrice.toFixed(6)}`;
-
-                if (maxPrice !== null && minPrice !== null) {
-                    if (currentPrice > maxPrice) {
-                        priceDisplay.style.color = '#0ECB81';
-                        // 发送价格过高预警
-                        sendPriceAlert(currentPrice);
-                    } else if (currentPrice < minPrice) {
-                        priceDisplay.style.color = '#F6465D';
-                        // 发送价格过低预警
-                        sendPriceAlert(currentPrice);
-                    } else {
-                        priceDisplay.style.color = '#F0B90B';
-                    }
-                }
-                break;
-            }
+    // 计算百分比
+    function getPercent(cur, min, max) {
+        if (min !== null && max !== null && !isNaN(min) && !isNaN(max) && max > min && cur !== null && !isNaN(cur)) {
+            let percent = ((cur - min) / (max - min)) * 100;
+            percent = Math.max(0, Math.min(100, percent));
+            return percent.toFixed(2) + '%';
         }
-
-        if (maxPrice !== null && minPrice !== null) {
-            thresholdDisplay.textContent = `max: ${maxPrice.toFixed(4)}   min: ${minPrice.toFixed(4)}`;
-        }
-
-        const now = new Date();
-        timeDisplay.textContent =
-            `${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')}/${String(now.getDate()).padStart(2,'0')} ` +
-            `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+        return '--%';
     }
 
-    // 启动定时器并存储ID
-    timerIds.updateTimer = setInterval(ironcladUpdate, 1000);
-    timerIds.protectTimer = setInterval(() => {
-        if (!document.getElementById('myx-absolute-overlay')) {
-            document.body.appendChild(overlay);
+    // 按钮点击事件
+    moreBtn.onclick = function() {
+        moreOpen = !moreOpen;
+        if (moreOpen) {
+            moreBtn.textContent = '收起更多';
+            const coinType = getCoinType();
+            // 获取当前价格
+            let curPrice = parseFloat(priceInput.value);
+            moreCur = curPrice;
+            fetchMonitorPricesForMore(coinType, function() {
+                let minStr = (moreMin !== null && !isNaN(moreMin)) ? moreMin : '--';
+                let maxStr = (moreMax !== null && !isNaN(moreMax)) ? moreMax : '--';
+                let percentStr = getPercent(moreCur, moreMin, moreMax);
+                moreArea.innerHTML = `<div>最小监控价格：${minStr}</div><div>最大监控价格：${maxStr}</div><div>区间百分比：${percentStr}</div><div>${CONFIG.username}（${window.userLevelText || '--'}）</div>`;
+                moreArea.style.display = '';
+            });
+        } else {
+            moreBtn.textContent = '查看更多';
+            moreArea.style.display = 'none';
         }
-    }, 2000);
+    };
 
-    // 添加事件监听器
-    document.addEventListener('visibilitychange', ironcladUpdate);
-    window.addEventListener('focus', ironcladUpdate);
+    // 实时获取页面左上角价格
+    function getRealtimePrice() {
+        const div = Array.from(document.querySelectorAll('div'))
+            .find(el => el.textContent.trim().startsWith('$') && el.textContent.match(/\d+\.\d+/));
+        if (div) {
+            // 提取 $ 后的第一个数字
+            const match = div.textContent.match(/\$(\d+\.\d+)/);
+            if (match) {
+                return parseFloat(match[1]);
+            }
+        }
+        return null;
+    }
 
-    // 初始执行
-    fetchMonitorPrices();
-    ironcladUpdate();
+    // 更新价格显示颜色
+    function updatePriceColor(price) {
+        console.log('[比对颜色] 当前价格:', price, '最大:', moreMax, '最小:', moreMin);
+        if (moreMax !== null && moreMin !== null && !isNaN(moreMax) && !isNaN(moreMin)) {
+            if (price > moreMax) {
+                priceDisplay.className = 'price-green';
+                console.log('[比对结果] 变绿色');
+            } else if (price < moreMin) {
+                priceDisplay.className = 'price-red';
+                console.log('[比对结果] 变红色');
+            } else {
+                priceDisplay.className = 'price-yellow';
+                console.log('[比对结果] 默认黄色');
+            }
+        } else {
+            priceDisplay.className = 'price-yellow';
+            console.log('[比对结果] 区间无效，默认黄色');
+        }
+    }
+
+    // 定时刷新弹窗价格、滑块、输入框
+    setInterval(() => {
+        const realPrice = getRealtimePrice();
+        console.log('定时抓取到的页面现价:', realPrice);
+        if (realPrice) {
+            priceDisplay.textContent = `当前价格: $${realPrice.toFixed(6)}`;
+            updatePriceColor(realPrice);
+            // priceInput.value = realPrice.toFixed(6);
+            // slider.value = realPrice;
+        }
+        console.log('priceDisplay:', priceDisplay.textContent, 'priceInput:', priceInput.value, 'slider:', slider.value);
+    }, 1000);
+
+    // 组装元素
+    sliderContainer.appendChild(titleBar);
+    contentDiv.appendChild(priceDisplay);
+    contentDiv.appendChild(priceInput);
+    contentDiv.appendChild(slider);
+    contentDiv.appendChild(btnGroup);
+    contentDiv.appendChild(moreArea);
+    contentDiv.appendChild(moreBtn);
+    sliderContainer.appendChild(contentDiv);
+    document.body.appendChild(sliderContainer);
 })();
