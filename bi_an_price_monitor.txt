@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      4.3
 // @description  Binance alpha 价格监控助手，支持电脑端、手机端
-// @author       Grok（微信：qf20210110）（github：https://github.com/secri203/bi_an_jk）
+// @author       Grok（github：https://github.com/secri203/bi_an_jk）
 // @match        https://www.binance.com/zh-CN/alpha/*
 // @grant        GM_xmlhttpRequest
 // @connect      101.33.234.249
